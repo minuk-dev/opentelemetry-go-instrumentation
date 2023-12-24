@@ -29,6 +29,8 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define REMOTE_ADDR_MAX_LEN 256
 #define HOST_MAX_LEN 256
 #define PROTO_MAX_LEN 8
+#define XFF_KEY_LENGTH 16
+#define CLIENT_IP_MAX_LEN 45
 
 struct http_server_span_t
 {
@@ -39,6 +41,7 @@ struct http_server_span_t
     char remote_addr[REMOTE_ADDR_MAX_LEN];
     char host[HOST_MAX_LEN];
     char proto[PROTO_MAX_LEN];
+    char client_ip[CLIENT_IP_MAX_LEN];
 };
 
 struct uprobe_data_t
@@ -290,6 +293,7 @@ int uprobe_HandlerFunc_ServeHTTP_Returns(struct pt_regs *ctx) {
     read_go_string(req_ptr, remote_addr_pos, http_server_span->remote_addr, sizeof(http_server_span->remote_addr), "remote addr from Request.RemoteAddr");
     read_go_string(req_ptr, host_pos, http_server_span->host, sizeof(http_server_span->host), "host from Request.Host");
     read_go_string(req_ptr, proto_pos, http_server_span->proto, sizeof(http_server_span->proto), "proto from Request.Proto");
+    extract_client_ip_from_req_headers((void*)(req_ptr + headers_ptr_pos), sizeof(http_server_span->client_ip), "client_ip from Request.Header")
 
     // status code
     bpf_probe_read(&http_server_span->status_code, sizeof(http_server_span->status_code), (void *)(resp_ptr + status_code_pos));
@@ -298,3 +302,98 @@ int uprobe_HandlerFunc_ServeHTTP_Returns(struct pt_regs *ctx) {
     stop_tracking_span(&http_server_span->sc, &http_server_span->psc);
     return 0;
 }
+
+static __always_inline void extract_client_ip_from_req_headers(void *headers_ptr_ptr, char* output, int maxLen) {
+    void *headers_ptr;
+    long res;
+    res = bpf_probe_read(&headers_ptr, sizeof(headers_ptr), headers_ptr_ptr);
+    if (res < 0)
+    {
+        return;
+    }
+    u64 headers_count = 0;
+    res = bpf_probe_read(&headers_count, sizeof(headers_count), headers_ptr);
+    if (res < 0)
+    {
+        return;
+    }
+    if (headers_count == 0)
+    {
+        return;
+    }
+    unsigned char log_2_bucket_count;
+    res = bpf_probe_read(&log_2_bucket_count, sizeof(log_2_bucket_count), headers_ptr + 9);
+    if (res < 0)
+    {
+        return;
+    }
+    u64 bucket_count = 1 << log_2_bucket_count;
+    void *header_buckets;
+    res = bpf_probe_read(&header_buckets, sizeof(header_buckets), (void*)(headers_ptr + buckets_ptr_pos));
+    if (res < 0)
+    {
+        return NULL;
+    }
+    u32 map_id = 0;
+    struct map_bucket *map_value = bpf_map_lookup_elem(&golang_mapbucket_storage_map, &map_id);
+    if (!map_value)
+    {
+        return;
+    }
+
+    for (u64 j = 0; j < MAX_BUCKETS; j++)
+    {
+        if (j >= bucket_count)
+        {
+            break;
+        }
+        res = bpf_probe_read(map_value, sizeof(struct map_bucket), header_buckets + (j * sizeof(struct map_bucket)));
+        if (res < 0)
+        {
+            continue;
+        }
+        for (u64 i = 0; i < 8; i++)
+        {
+            if (map_value->tophash[i] == 0)
+            {
+                continue;
+            }
+            if (map_value->keys[i].len != XFF_KEY_LENGTH)
+            {
+                continue;
+            }
+            char current_header_key[XFF_KEY_LENGTH];
+            bpf_probe_read(current_header_key, sizeof(current_header_key), map_value->keys[i].str);
+            if (!bpf_memcmp(current_header_key, "x-forwarded-for", XFF_KEY_LENGTH) && !bpf_memcmp(current_header_key, "X-Forwarded-For", XFF_KEY_LENGTH))
+            {
+                continue;
+            }
+            void *xff_header_value_ptr = map_value->values[i].array;
+            struct go_string xff_header_value_go_str;
+            res = bpf_probe_read(&xff_header_value_go_str, sizeof(xff_header_value_go_str), xff_header_value_ptr);
+            if (res < 0)
+            {
+                return;
+            }
+            int client_ip_len = 0;
+            while (client_ip_len < xff_header_value_go_str.len)
+            {
+                if (xff_header_value_go_str.str[client_ip_len] == ';')
+                {
+                    break;
+                }
+            }
+            if (client_ip_len > maxLen)
+            {
+                return;
+            }
+            res = bpf_probe_read(&output, sizeof(client_ip_len), xff_header_value_go_str.str);
+            if (res < 0)
+            {
+                return;
+            }
+            return;
+        }
+    }
+}
+
