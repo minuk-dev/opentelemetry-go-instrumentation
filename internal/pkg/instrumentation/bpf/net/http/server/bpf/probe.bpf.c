@@ -293,7 +293,7 @@ int uprobe_HandlerFunc_ServeHTTP_Returns(struct pt_regs *ctx) {
     read_go_string(req_ptr, remote_addr_pos, http_server_span->remote_addr, sizeof(http_server_span->remote_addr), "remote addr from Request.RemoteAddr");
     read_go_string(req_ptr, host_pos, http_server_span->host, sizeof(http_server_span->host), "host from Request.Host");
     read_go_string(req_ptr, proto_pos, http_server_span->proto, sizeof(http_server_span->proto), "proto from Request.Proto");
-    extract_client_ip_from_req_headers((void*)(req_ptr + headers_ptr_pos), sizeof(http_server_span->client_ip), "client_ip from Request.Header")
+    extract_client_ip_from_req_headers((void*)(req_ptr + headers_ptr_pos), sizeof(http_server_span->client_ip), "client_ip from Request.Header");
 
     // status code
     bpf_probe_read(&http_server_span->status_code, sizeof(http_server_span->status_code), (void *)(resp_ptr + status_code_pos));
