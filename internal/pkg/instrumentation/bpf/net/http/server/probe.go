@@ -150,6 +150,7 @@ type event struct {
 	RemoteAddr [256]byte
 	Host       [256]byte
 	Proto      [8]byte
+	ClientIP   [48]byte
 }
 
 func convertEvent(e *event) *probe.Event {
@@ -159,6 +160,7 @@ func convertEvent(e *event) *probe.Event {
 	host := unix.ByteSliceToString(e.Host[:])
 	proto := unix.ByteSliceToString(e.Proto[:])
 	ip, port, isRemoteAddrValid := net.SplitHostPort(remoteAddr)
+	clientIP := unix.ByteSliceToString(e.ClientIP[:])
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    e.SpanContext.TraceID,
@@ -183,6 +185,7 @@ func convertEvent(e *event) *probe.Event {
 		semconv.HTTPMethodKey.String(method),
 		semconv.HTTPTargetKey.String(path),
 		semconv.HTTPResponseStatusCodeKey.Int(int(e.StatusCode)),
+		attribute.String("http.client_ip", string(clientIP)),
 		semconv.NetHostName(host),
 		semconv.NetProtocolName(proto),
 	}
